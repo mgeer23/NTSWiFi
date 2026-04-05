@@ -1,0 +1,4 @@
+[
+  {"name": "Living Room", "host": "100.x.x.x", "ssh_user": "pi"},
+  {"name": "Kitchen",     "host": "100.x.x.x", "ssh_user": "pi"}
+]
