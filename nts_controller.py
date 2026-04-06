@@ -191,37 +191,82 @@ def get_status(speaker: dict) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# YouTube / YouTube Music via yt-dlp
+# YouTube / YouTube Music via mpv + yt-dlp (Pi-side resolution)
 # ---------------------------------------------------------------------------
 
 
-def play_yt(speaker: dict, yt_url: str) -> None:
-    """Resolve a YouTube or YouTube Music URL to an audio stream and play it.
+def is_playlist_url(url: str) -> bool:
+    """Return True if the URL refers to a YouTube playlist rather than a single track."""
+    return "list=" in url or "/playlist" in url
 
-    yt-dlp runs on the server to extract the direct stream URL, which is then
-    handed to play_stream() — identical to the NTS flow.
+
+def fetch_playlist_tracks(yt_url: str) -> list[dict]:
+    """Fetch playlist track metadata from YouTube without downloading audio.
+
+    Runs yt-dlp --flat-playlist -j on the server. Returns a list of dicts:
+        title        (str) — track title
+        duration_str (str) — formatted as M:SS, or "?" if unknown
+        yt_url       (str) — individual track URL
     """
-    log.info("play_yt: resolving %s", yt_url)
+    log.info("fetch_playlist_tracks: %s", yt_url)
     try:
         result = subprocess.run(
-            ["yt-dlp", "-f", "bestaudio", "--get-url", yt_url],
+            ["yt-dlp", "--flat-playlist", "-j", "--no-warnings", yt_url],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=60,
         )
     except FileNotFoundError:
-        raise RuntimeError(
-            "yt-dlp is not installed. Run: pip install yt-dlp"
-        )
+        raise RuntimeError("yt-dlp is not installed. Run: pip install yt-dlp")
     except subprocess.TimeoutExpired:
-        raise RuntimeError("yt-dlp timed out resolving the URL.")
+        raise RuntimeError("yt-dlp timed out fetching playlist metadata.")
 
     if result.returncode != 0:
         raise RuntimeError(f"yt-dlp failed: {result.stderr.strip()}")
 
-    stream_url = result.stdout.strip().split("\n")[0]
-    if not stream_url:
-        raise RuntimeError("yt-dlp returned no stream URL.")
+    tracks = []
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
 
-    log.info("play_yt: resolved stream URL, starting playback on %s", speaker["name"])
-    play_stream(speaker, stream_url)
+        title = entry.get("title") or entry.get("id", "Unknown")
+        duration = entry.get("duration")
+        if duration is not None:
+            mins, secs = divmod(int(duration), 60)
+            duration_str = f"{mins}:{secs:02d}"
+        else:
+            duration_str = "?"
+
+        track_url = entry.get("url") or entry.get("webpage_url")
+        if not track_url:
+            vid_id = entry.get("id")
+            track_url = f"https://www.youtube.com/watch?v={vid_id}" if vid_id else yt_url
+
+        tracks.append({"title": title, "duration_str": duration_str, "yt_url": track_url})
+
+    if not tracks:
+        raise RuntimeError("No tracks found in playlist. Is the URL correct?")
+
+    log.info("fetch_playlist_tracks: found %d tracks", len(tracks))
+    return tracks
+
+
+def play_yt(speaker: dict, yt_url: str) -> None:
+    """Play a YouTube or YouTube Music URL (single track or playlist) on the Pi.
+
+    The URL is passed directly to mpv, which resolves it lazily via its built-in
+    yt-dlp hook. Works for single tracks and playlists identically.
+
+    Requires yt-dlp installed on the Pi: pip install yt-dlp
+    """
+    host, user = speaker["host"], speaker["ssh_user"]
+    cmd = _mpv_command(yt_url, speaker.get("audio_device"))
+    log.info("play_yt: %s -> %s [%s]", speaker["name"], yt_url, host)
+    out, err, _ = _ssh_exec(host, user, cmd)
+    if err:
+        log.warning("play_yt stderr (%s): %s", speaker["name"], err)

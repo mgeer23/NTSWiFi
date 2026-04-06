@@ -45,14 +45,6 @@ def do_play(speaker: dict, stream_url: str, label: str) -> None:
             st.error(f"Failed: {exc}")
 
 
-def do_play_yt(speaker: dict, yt_url: str) -> None:
-    with st.spinner(f"Resolving stream and connecting to {speaker['name']}… (may take a few seconds)"):
-        try:
-            nts.play_yt(speaker, yt_url)
-            st.success(f"Playing on {speaker['name']}")
-        except Exception as exc:
-            st.error(f"Failed: {exc}")
-
 
 def do_stop(speaker: dict) -> None:
     with st.spinner(f"Stopping {speaker['name']}…"):
@@ -153,20 +145,78 @@ st.divider()
 # ---------------------------------------------------------------------------
 
 st.subheader("YouTube / YouTube Music")
-st.caption("Paste any YouTube or YouTube Music URL — the audio plays on the selected speaker.")
+st.caption(
+    "Paste a YouTube or YouTube Music URL — single track or full playlist. "
+    "For playlists, click Preview to see the track list before playing."
+)
 
 yt_url = st.text_input(
     "YouTube URL",
-    placeholder="https://music.youtube.com/watch?v=... or https://www.youtube.com/watch?v=...",
+    placeholder=(
+        "https://music.youtube.com/playlist?list=… or "
+        "https://www.youtube.com/watch?v=…"
+    ),
     label_visibility="collapsed",
+    key="yt_url_input",
 )
-yt_speaker = st.selectbox("Speaker", names, key="yt_speaker")
+yt_speaker_name = st.selectbox("Speaker", names, key="yt_speaker")
 
-if st.button("Play", key="yt_play", use_container_width=False):
-    if not yt_url.strip():
-        st.warning("Paste a YouTube URL first.")
-    else:
-        do_play_yt(find_speaker(speakers, yt_speaker), yt_url.strip())
+# Clear stored playlist preview if the URL has changed
+stripped_url = yt_url.strip()
+if stripped_url != st.session_state.get("yt_playlist_url", ""):
+    st.session_state.pop("yt_playlist", None)
+    st.session_state.pop("yt_playlist_url", None)
+
+if stripped_url and nts.is_playlist_url(stripped_url):
+    # Playlist flow: preview first, then play
+    col_preview, col_play = st.columns([1, 2])
+
+    with col_preview:
+        if st.button("Preview tracks", key="yt_preview", use_container_width=True):
+            with st.spinner("Fetching playlist…"):
+                try:
+                    tracks = nts.fetch_playlist_tracks(stripped_url)
+                    st.session_state["yt_playlist"] = tracks
+                    st.session_state["yt_playlist_url"] = stripped_url
+                except Exception as exc:
+                    st.error(f"Could not fetch playlist: {exc}")
+
+    if "yt_playlist" in st.session_state:
+        tracks = st.session_state["yt_playlist"]
+        DISPLAY_LIMIT = 50
+        st.markdown(f"**{len(tracks)} tracks**")
+        for i, track in enumerate(tracks[:DISPLAY_LIMIT], 1):
+            st.markdown(f"{i}. {track['title']}  `{track['duration_str']}`")
+        if len(tracks) > DISPLAY_LIMIT:
+            st.caption(f"…and {len(tracks) - DISPLAY_LIMIT} more")
+
+        with col_play:
+            if st.button(
+                f"Play all on {yt_speaker_name}",
+                key="yt_play_playlist",
+                use_container_width=True,
+                type="primary",
+            ):
+                speaker = find_speaker(speakers, yt_speaker_name)
+                with st.spinner(f"Starting playlist on {speaker['name']}…"):
+                    try:
+                        nts.play_yt(speaker, stripped_url)
+                        st.success(f"Playing {len(tracks)}-track playlist on {speaker['name']}")
+                    except Exception as exc:
+                        st.error(f"Failed: {exc}")
+else:
+    # Single track flow
+    if st.button("Play", key="yt_play", use_container_width=False):
+        if not stripped_url:
+            st.warning("Paste a YouTube URL first.")
+        else:
+            speaker = find_speaker(speakers, yt_speaker_name)
+            with st.spinner(f"Connecting to {speaker['name']}…"):
+                try:
+                    nts.play_yt(speaker, stripped_url)
+                    st.success(f"Playing on {speaker['name']}")
+                except Exception as exc:
+                    st.error(f"Failed: {exc}")
 
 st.divider()
 
